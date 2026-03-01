@@ -1,6 +1,6 @@
 #!/usr/bin/env nu
 
-use ~/.fin-plan/config.nu [income_filters, expenses_filters]
+use ~/.fin-plan/config.nu [income_filters, expenses_filters, expense_category_order]
 
 const outdir = "fin-plan-output"
 
@@ -129,6 +129,7 @@ def process_accounts [kind: string] {
       # update the account
       $account
       | update items $updated_items
-      | sort-by category # TODO: custom sort function
     }
+    | get items
+    | flatten
 }
