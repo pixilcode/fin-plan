@@ -1,6 +1,6 @@
 #!/usr/bin/env nu
 
-use ~/.fin-plan/config.nu [income_filters, expenses_filters, expense_category_order]
+use ~/.fin-plan/config.nu [income_filters, income_categories, expenses_filters, expense_categories]
 
 const outdir = "fin-plan-output"
 
@@ -61,6 +61,12 @@ def main [...csv_files: path, --retry] {
   let output = { income: $income, expenses: $expenses }
 
   let result_file = $outdir | path join "results.csv"
+
+  if $retry {
+    output | save --force $result_file
+  } else {
+    output | save $result_file
+  }
 }
 
 # attempts to categorize incomes and expenses based on
