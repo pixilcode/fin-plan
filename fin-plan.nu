@@ -4,7 +4,7 @@ use ~/.fin-plan/config.nu [income_filters, expenses_filters, expense_category_or
 
 const outdir = "fin-plan-output"
 
-def main [...csv_files: path] {
+def main [...csv_files: path, --retry] {
   if ($csv_files | length) == 0 {
     print --stderr "error: need to provide paths"
     exit 1
@@ -32,7 +32,7 @@ def main [...csv_files: path] {
     | where credit != ""
     | reject debit
     | rename --column {credit: amount}
-    | process_accounts "income"
+    | process_accounts "income" $retry
   )
 
   print $income
@@ -42,7 +42,7 @@ def main [...csv_files: path] {
     | where debit != ""
     | reject credit
     | rename --column {debit: amount}
-    | process_accounts "expenses"
+    | process_accounts "expenses" $retry
   )
 
   print $expenses
@@ -113,14 +113,22 @@ def conditional_update [updates: table] {
 
 # allow the user to edit entries in LibreOffice, sorted
 # by account
-def process_accounts [kind: string] {
+def process_accounts [kind: string, retry: bool] {
     $in
     | group-by --to-table account
     | insert out { |account| $outdir | path join $"($kind).($account.account).csv" }
     | each { |account|
-      # create the CSV file for writing
+      # check if the out file exists
+      let file_exists = (ls $account.out | length) > 0
+
+      # create the CSV file for writing if retrying
+      # or if the file doesn't exist
       # TODO: get rid of the `-f` flag when done testing
-      $account.items | save -f $account.out
+      if not $retry or not $file_exists {
+        $account.items | save -f $account.out
+      }
+
+      # open the file for the user to edit
       soffice $account.out
 
       # read the results of the CSV file
