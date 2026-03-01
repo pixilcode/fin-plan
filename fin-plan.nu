@@ -33,6 +33,7 @@ def main [...csv_files: path, --retry] {
     | reject debit
     | rename --column {credit: amount}
     | process_accounts "income" $retry
+    | each { |entry| verify_all_have_category $entry }
   )
 
   print $income
@@ -43,6 +44,7 @@ def main [...csv_files: path, --retry] {
     | reject credit
     | rename --column {debit: amount}
     | process_accounts "expenses" $retry
+    | each { |entry| verify_all_have_category $entry }
   )
 
   print $expenses
@@ -140,4 +142,15 @@ def process_accounts [kind: string, retry: bool] {
     }
     | get items
     | flatten
+}
+
+def verify_all_have_category [entry: record] {
+  print $"processing entry ($entry)"
+  $entry.category | debug
+  if $entry.category == "" {
+    let msg = $"Entry missing category: ($entry)\nUse --retry to try again"
+    error make $msg
+  }
+
+  $entry
 }
