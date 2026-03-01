@@ -27,6 +27,7 @@ def main [...csv_files: path, --retry] {
     | try_categorize
   )
 
+  # process income entries
   let income = (
     $data
     | where credit != ""
@@ -34,10 +35,14 @@ def main [...csv_files: path, --retry] {
     | rename --column {credit: amount}
     | process_accounts "income" $retry
     | each { |entry| verify_all_have_category $entry }
+    | group-by --to-table category
+    | each { |category|
+      $category
+      | update items { sort-by note | select amount note }
+    }
   )
 
-  print $income
-
+  # process expenses entries
   let expenses = (
     $data
     | where debit != ""
@@ -45,9 +50,17 @@ def main [...csv_files: path, --retry] {
     | rename --column {debit: amount}
     | process_accounts "expenses" $retry
     | each { |entry| verify_all_have_category $entry }
+    | group-by --to-table category
+    | each { |category|
+      $category
+      | update items { sort-by note | select amount note }
+    }
   )
 
-  print $expenses
+  # output into csv
+  let output = { income: $income, expenses: $expenses }
+
+  let result_file = $outdir | path join "results.csv"
 }
 
 # attempts to categorize incomes and expenses based on
@@ -145,7 +158,6 @@ def process_accounts [kind: string, retry: bool] {
 }
 
 def verify_all_have_category [entry: record] {
-  print $"processing entry ($entry)"
   $entry.category | debug
   if $entry.category == "" {
     let msg = $"Entry missing category: ($entry)\nUse --retry to try again"
