@@ -1,5 +1,7 @@
 #!/usr/bin/env nu
 
+use ~/.fin-plan/config.nu [income_filters, expenses_filters]
+
 const outdir = "fin-plan-output"
 
 def main [...csv_files: path] {
@@ -19,11 +21,10 @@ def main [...csv_files: path] {
     open ...$csv_files
     | select "Account Number" "Post Date" "Description" "Debit" "Credit"
     | rename account post_date description debit credit
-    | update post_date { into datetime }
     | sort-by account post_date
     | insert category null
     | insert note null
-    # TODO: run filters here
+    | try_categorize
   )
 
   let income = (
@@ -34,6 +35,8 @@ def main [...csv_files: path] {
     | process_accounts "income"
   )
 
+  print $income
+
   let expenses = (
     $data
     | where debit != ""
@@ -41,8 +44,75 @@ def main [...csv_files: path] {
     | rename --column {debit: amount}
     | process_accounts "expenses"
   )
+
+  print $expenses
 }
 
+# attempts to categorize incomes and expenses based on
+# the filters provided
+def try_categorize [] {
+  $in
+  | each { |entry|
+    if (is_income $entry) {
+      $entry
+      | conditional_update (income_filters)
+    } else if (is_expense $entry) {
+      $entry
+      | conditional_update (expenses_filters)
+    } else {
+      error make $"entry is neither income nor expense: ($entry)"
+    }
+  }
+}
+
+def is_income [entry] {
+  $entry.credit != ""
+}
+
+export def is_expense [entry] {
+  $entry.debit != ""
+}
+
+# search for an update that matches, then apply that update if there is one
+#
+# an update is a record:
+# 
+#   { cond: closure, category: string, note?: string }
+# 
+#   - `cond`: a predicate that defines whether an update should apply
+#   - `category`: the category to apply
+#   - `note` (optional): the note to apply
+#
+# For example,
+#
+# ```
+# {
+#   cond: { $in.description == "Fidelity" },
+#   category: "Savings",
+#   note: "Retirement",
+# }
+# ```
+def conditional_update [updates: table] {
+
+  let entry = $in
+
+  let update = (
+    $updates
+    | where { |filter| $entry | do $filter.cond }
+    | first
+  )
+
+  if $update == null {
+    return $entry
+  }
+
+  $entry
+  | update category $update.category
+  | update note $update.note?
+}
+
+# allow the user to edit entries in LibreOffice, sorted
+# by account
 def process_accounts [kind: string] {
     $in
     | group-by --to-table account
