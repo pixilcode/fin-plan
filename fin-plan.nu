@@ -33,13 +33,6 @@ def main [...csv_files: path, --retry] {
     | where credit != ""
     | reject debit
     | rename --column {credit: amount}
-    | process_accounts "income" $retry
-    | each { |entry| verify_all_have_category $entry }
-    | group-by --to-table category
-    | each { |category|
-      $category
-      | update items { sort-by note | select amount note }
-    }
   )
 
   # process expenses entries
@@ -48,24 +41,74 @@ def main [...csv_files: path, --retry] {
     | where debit != ""
     | reject credit
     | rename --column {debit: amount}
-    | process_accounts "expenses" $retry
-    | each { |entry| verify_all_have_category $entry }
-    | group-by --to-table category
-    | each { |category|
-      $category
-      | update items { sort-by note | select amount note }
+  )
+
+  let output = (
+    [
+      [name, entries, categories];
+      [income, $income, $income_categories],
+      [expenses, $expenses, $expense_categories]
+    ]
+    # for each kind of entry
+    | each { |kind|
+      let entries = (
+        $kind.entries
+        # let the user update the entries
+        | process_accounts $kind.name $kind.categories $retry
+        # verify that all entries have acceptable categories
+        | each { |entry| verify_all_have_valid_category $entry $kind.categories }
+        | group-by --to-table category
+        | each { |category|
+          $category
+          | update items { sort-by note | select amount note }
+        }
+        | sort-by --custom { |a, b|
+          # sort by the order of the category list
+          let a_cat_index = (
+            $kind.categories
+            | enumerate
+            | find $a.category
+            | get index
+            | first --strict
+          )
+
+          let b_cat_index = (
+            $kind.categories
+            | enumerate
+            | find $b.category
+            | get index
+            | first --strict
+          )
+
+          $a_cat_index < $b_cat_index
+        }
+      )
+
+      { name: $kind.name, entries: $entries }
     }
   )
 
-  # output into csv
-  let output = { income: $income, expenses: $expenses }
+  # collapse the output into a table
+  let output = (
+    $output | each { |kind|
+
+      $kind.entries | each { |category|
+          $category.items | each { |item|
+              { kind: $kind.name, category: $category.category }
+              | merge $item
+          }
+      }
+      | flatten
+    }
+    | flatten
+  )
 
   let result_file = $outdir | path join "results.csv"
 
   if $retry {
-    output | save --force $result_file
+    $output | save --force $result_file
   } else {
-    output | save $result_file
+    $output | save $result_file
   }
 }
 
@@ -97,9 +140,9 @@ export def is_expense [entry] {
 # search for an update that matches, then apply that update if there is one
 #
 # an update is a record:
-# 
+#
 #   { cond: closure, category: string, note?: string }
-# 
+#
 #   - `cond`: a predicate that defines whether an update should apply
 #   - `category`: the category to apply
 #   - `note` (optional): the note to apply
@@ -134,39 +177,46 @@ def conditional_update [updates: table] {
 
 # allow the user to edit entries in LibreOffice, sorted
 # by account
-def process_accounts [kind: string, retry: bool] {
-    $in
-    | group-by --to-table account
-    | insert out { |account| $outdir | path join $"($kind).($account.account).csv" }
-    | each { |account|
-      # check if the out file exists
-      let file_exists = (ls $account.out | length) > 0
+def process_accounts [kind: string, categories: list<string>, retry: bool]: table<account: string, post_date: string, description: string, amount: float, category: oneof<nothing, string>, note: oneof<nothing, string>> -> table<account: string, post_date: string, description: string, amount: float, category: string, note: string> {
+  let accounts = $in
+  let category_rows = $categories | each { |category| { account: "~IGNORE", category: $category }}
 
-      # create the CSV file for writing if retrying
-      # or if the file doesn't exist
-      # TODO: get rid of the `-f` flag when done testing
-      if not $retry or not $file_exists {
-        $account.items | save -f $account.out
-      }
+  $accounts
+  | group-by --to-table account
+  | insert out { |account| $outdir | path join $"($kind).($account.account).csv" }
+  | each { |account|
+    # check if the out file exists
+    let file_exists = (do --ignore-errors { ls $account.out }) != null
 
-      # open the file for the user to edit
-      soffice $account.out
-
-      # read the results of the CSV file
-      let updated_items = open $account.out
-
-      # update the account
-      $account
-      | update items $updated_items
+    # create the CSV file for writing if retrying
+    # or if the file doesn't exist
+    # TODO: get rid of the `-f` flag when done testing
+    if not $retry or not $file_exists {
+      $account.items
+      | append $category_rows
+      | save -f $account.out
     }
-    | get items
-    | flatten
+
+    # open the file for the user to edit
+    soffice $account.out
+
+    # read the results of the CSV file
+    let updated_items = (
+      open $account.out
+      | where account != "~IGNORE"
+    )
+
+    # update the account
+    $account
+    | update items $updated_items
+  }
+  | get items
+  | flatten
 }
 
-def verify_all_have_category [entry: record] {
-  $entry.category | debug
-  if $entry.category == "" {
-    let msg = $"Entry missing category: ($entry)\nUse --retry to try again"
+def verify_all_have_valid_category [entry: record, categories: list<string>] {
+  if ($categories | find $entry.category | is-empty) {
+    let msg = $"Entry has invalid category: ($entry)\nUse --retry to try again"
     error make $msg
   }
 
